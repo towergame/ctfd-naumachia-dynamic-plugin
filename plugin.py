@@ -1,13 +1,14 @@
 from CTFd import utils
 from CTFd.models import db, Solves, Fails, Flags, Challenges, ChallengeFiles, Tags, Hints
 from CTFd.plugins import register_plugin_assets_directory
-from CTFd.plugins.challenges import BaseChallenge, CHALLENGE_CLASSES
+from CTFd.plugins.challenges import CHALLENGE_CLASSES, BaseChallenge
+from .decay import DECAY_FUNCTIONS, logarithmic
 from CTFd.plugins.flags import get_flag_class
 from CTFd.utils.config import is_teams_mode
 from CTFd.utils.config.visibility import challenges_visible
 from CTFd.utils.uploads import delete_file
 from CTFd.utils.user import get_ip, is_admin, authed, get_current_user, get_current_team
-from flask import session, abort, send_file
+from flask import session, abort, send_file, Blueprint
 from io import BytesIO
 from urllib.parse import quote
 import json
@@ -18,23 +19,27 @@ import requests
 from .config import config
 
 plugin_dirname = os.path.basename(os.path.dirname(__file__))
-logger = logging.getLogger('naumachia')
+logger = logging.getLogger('naumachia-dynamic')
 registrar_timeout = 10
 
-class NaumachiaChallengeModel(Challenges):
-    __mapper_args__ = {'polymorphic_identity': 'naumachia'}
+class DynamicNaumachiaChallengeModel(Challenges):
+    __mapper_args__ = {'polymorphic_identity': 'naumachia-dynamic'}
     id = db.Column(
         db.Integer, db.ForeignKey("challenges.id", ondelete="CASCADE"), primary_key=True
     )
     naumachia_name = db.Column(db.String(80))
+    initial = db.Column(db.Integer, default=0)
+    minimum = db.Column(db.Integer, default=0)
+    decay = db.Column(db.Integer, default=0)
+    function = db.Column(db.String(32), default="logarithmic")
 
     def __init__(self, *args, **kwargs):
         super().__init__(**kwargs)
         self.naumachia_name = kwargs["naumachia_name"]
 
-class NaumachiaChallenge(BaseChallenge):
-    id = "naumachia"  # Unique identifier used to register challenges
-    name = "naumachia"  # Name of a challenge type
+class DynamicNaumachiaChallenge(BaseChallenge):
+    id = "naumachia-dynamic"  # Unique identifier used to register challenges
+    name = "naumachia-dynamic"  # Name of a challenge type
     templates = {  # Nunjucks templates used for each aspect of challenge editing & viewing
         'create': f'/plugins/{plugin_dirname}/assets/create.html',
         'update': f'/plugins/{plugin_dirname}/assets/update.html',
@@ -45,9 +50,25 @@ class NaumachiaChallenge(BaseChallenge):
         'update': f'/plugins/{plugin_dirname}/assets/update.js',
         'view': f'/plugins/{plugin_dirname}/assets/view.js',
     }
+    # Blueprint used to access the static_folder directory.
+    blueprint = Blueprint(
+        "dynamic_naumachia_challenges",
+        __name__,
+        template_folder="templates",
+        static_folder="assets",
+    )
 
     # Allows the default implementations of create and delete in BaseChallenge to work here.
-    challenge_model = NaumachiaChallengeModel
+    challenge_model = DynamicNaumachiaChallengeModel
+
+    @classmethod
+    def calculate_value(cls, challenge):
+        f = DECAY_FUNCTIONS.get(challenge.function, logarithmic)
+        value = f(challenge)
+
+        challenge.value = value
+        db.session.commit()
+        return challenge
 
     @classmethod
     def read(cls, challenge):
@@ -57,8 +78,30 @@ class NaumachiaChallenge(BaseChallenge):
         :param challenge:
         :return: Challenge object, data dictionary to be returned to the user
         """
-        data = super().read(challenge)
-        data['naumachia_name'] = challenge.naumachia_name
+        challenge = DynamicNaumachiaChallengeModel.query.filter_by(id=challenge.id).first()
+        data = {
+            "id": challenge.id,
+            "name": challenge.name,
+            "value": challenge.value,
+            "initial": challenge.initial,
+            "decay": challenge.decay,
+            "minimum": challenge.minimum,
+            "function": challenge.function,
+            "description": challenge.description,
+            "connection_info": challenge.connection_info,
+            "next_id": challenge.next_id,
+            "category": challenge.category,
+            "state": challenge.state,
+            "max_attempts": challenge.max_attempts,
+            "type": challenge.type,
+            "type_data": {
+                "id": cls.id,
+                "name": cls.name,
+                "templates": cls.templates,
+                "scripts": cls.scripts,
+            },
+            "naumachia_name": challenge.naumachia_name
+        }
         return data
 
     @classmethod
@@ -74,10 +117,18 @@ class NaumachiaChallenge(BaseChallenge):
         data = request.form or request.get_json()
 
         for attr, value in data.items():
+            # We need to set these to floats so that the next operations don't operate on strings
+            if attr in ("initial", "minimum", "decay"):
+                value = float(value)
             setattr(challenge, attr, value)
 
-        db.session.commit()
-        return challenge
+        return DynamicNaumachiaChallenge.calculate_value(challenge)
+
+    @classmethod
+    def solve(cls, user, team, challenge, request):
+        super().solve(user, team, challenge, request)
+
+        DynamicNaumachiaChallenge.calculate_value(challenge)
 
 def user_can_get_config():
     if is_admin():
@@ -144,7 +195,7 @@ def load(app):
     config(app)
 
     app.db.create_all()
-    CHALLENGE_CLASSES['naumachia'] = NaumachiaChallenge
+    CHALLENGE_CLASSES['naumachia-dynamic'] = DynamicNaumachiaChallenge
 
     # Intitialize logging.
     logger.setLevel(app.config.get('LOG_LEVEL', "INFO"))
@@ -153,7 +204,7 @@ def load(app):
     if not os.path.exists(log_dir):
         os.makedirs(log_dir)
 
-    log_file = os.path.join(log_dir, 'naumachia.log')
+    log_file = os.path.join(log_dir, 'naumachia-dynamic.log')
 
     if not os.path.exists(log_file):
         open(log_file, 'a').close()
@@ -166,7 +217,7 @@ def load(app):
     @app.route('/naumachia/config/<int:chalid>', methods=['GET'])
     def registrar(chalid):
         if not user_can_get_config():
-            logger.info(f"[403] Client {session.get('clientname', '<not authed>')} requested config for challenge {chal.id}: Not authorized")
+            logger.info(f"[403] Client {session.get('clientname', '<not authed>')} requested config for challenge {chalid}: Not authorized")
             abort(403)
 
         if is_teams_mode():
@@ -174,7 +225,7 @@ def load(app):
         else:
             clientname = get_current_user().name
 
-        chal = NaumachiaChallengeModel.query.filter_by(id=chalid).first_or_404()
+        chal = DynamicNaumachiaChallengeModel.query.filter_by(id=chalid).first_or_404()
         if chal.state == 'hidden':
             logger.info(f"[404] Client {clientname} requested config for hidden challenge {chal.name}")
             abort(404)

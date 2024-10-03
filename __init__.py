@@ -1,1 +1,1 @@
-from .plugin import load, NaumachiaChallengeModel, NaumachiaChallenge
+from .plugin import load, DynamicNaumachiaChallengeModel, DynamicNaumachiaChallenge
