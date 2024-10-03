@@ -1,5 +1,11 @@
 # CTFd Naumachia Plugin
 
+## Dynamic scoring fork
+
+This is a fork for my specific purpose where I needed dynamic scoring functionality for the Naumachia CTFd plugin.
+
+---
+
 Plugin for [CTFd](https://github.com/ctfd/ctfd) to integrate with [Naumachia](https://github.com/nategraf/Naumachia)
 
 This plugin creates the utilities needed to manage Naumachia user configs and certs from the CTFd
