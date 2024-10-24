@@ -68,8 +68,26 @@ def logarithmic(challenge):
 
     return value
 
+def better_logarithmic(challenge):
+    solve_count = get_solve_count(challenge)
+
+    intermed = (challenge.decay) / (challenge.decay + solve_count - 1)
+    intermed = math.pow(intermed, 1.5)
+
+    if intermed > 1:
+        intermed = 1
+
+    value = (challenge.minimum - challenge.initial) * intermed
+
+    value = math.ceil(value)
+
+    if value < challenge.minimum:
+        value = challenge.minimum
+
+    return value
 
 DECAY_FUNCTIONS = {
     "linear": linear,
     "logarithmic": logarithmic,
+    "better_logarithmic": better_logarithmic,
 }
